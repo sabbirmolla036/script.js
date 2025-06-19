@@ -1,13 +1,12 @@
 const puppeteer = require('puppeteer');
 const axios = require('axios');
 
-// CONFIG
 const INVITE_URL = "https://app.sophon.xyz/invite/";
-const DOMAIN = "1secmail.com"; // আপনার টেম্প মেইল ডোমেইন
+const DOMAIN = "1secmail.com";
 
 function generateRandomString(length = 10) {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    return [...Array(length)].map(() => chars[Math.floor(Math.random() * chars.length)]).join('');
+    return Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
 async function getVerificationCode(login, waitTime = 120000) {
@@ -26,7 +25,7 @@ async function getVerificationCode(login, waitTime = 120000) {
                 if (match) return match[1];
             }
         } catch (err) {
-            console.log("⏳ Waiting for email...");
+            console.log(`⏳ [${login}] Waiting for verification email...`);
         }
         await new Promise(r => setTimeout(r, checkInterval));
     }
@@ -42,11 +41,12 @@ async function createAccount(inviteCode, index) {
     const page = await browser.newPage();
 
     try {
-        await page.goto(INVITE_URL, { waitUntil: 'networkidle2' });
+        await page.goto(INVITE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
 
-        await page.waitForSelector("input[type='email'], #email_field", { timeout: 10000 });
-        const emailInput = await page.$("input[type='email'], #email_field");
-        await emailInput.type(email);
+        // Try better selectors
+        const emailInput = await page.$("input[placeholder*='email'], input[type='email'], #email_field");
+        if (!emailInput) throw new Error("❌ Email input field not found!");
+        await emailInput.type(email, { delay: 50 });
 
         const textInputs = await page.$$("input[type='text']");
         if (textInputs.length > 0) {
@@ -54,16 +54,18 @@ async function createAccount(inviteCode, index) {
         }
 
         const button = await page.$("button");
+        if (!button) throw new Error("❌ Submit button not found!");
         await button.click();
 
-        console.log(`[${index}] 📨 Waiting for verification code...`);
+        console.log(`[${index}] 📨 Submitted, waiting for verification code...`);
+
         const code = await getVerificationCode(login);
         if (!code) {
-            console.log(`[${index}] ❌ Code not received.`);
+            console.log(`[${index}] ❌ No verification code received.`);
             return;
         }
 
-        console.log(`[${index}] ✅ Received code: ${code}`);
+        console.log(`[${index}] ✅ Verification code received: ${code}`);
         await page.waitForSelector("input[type='number']", { timeout: 10000 });
         await page.type("input[type='number']", code);
         await page.click("button");
@@ -87,6 +89,6 @@ async function createAccount(inviteCode, index) {
 
     for (let i = 1; i <= total; i++) {
         await createAccount(inviteCode, i);
-        await new Promise(r => setTimeout(r, 5000 + Math.random() * 3000));
+        await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000)); // Delay between accounts
     }
 })();
