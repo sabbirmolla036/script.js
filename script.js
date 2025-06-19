@@ -1,112 +1,154 @@
 const puppeteer = require('puppeteer');
-const axios = require('axios');
+const fetch = require('node-fetch');
 
-const INVITE_URL = "https://app.sophon.xyz/invite/";
-const DOMAIN = "1secmail.com";
+const INVITE_URL = 'https://app.sophon.xyz/invite/';
 
-function generateRandomString(length = 10) {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    return Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+function randomString(length = 10) {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for(let i=0; i<length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
 }
 
-async function getVerificationCode(login, waitTime = 120000) {
-    const start = Date.now();
-    const regex = /Enter the code below on the login screen to continue:\s*(\d{6})/;
+// Create temp email from 1secmail API
+function createTempEmail() {
+  const user = randomString(10);
+  const domain = '1secmail.com';
+  const email = `${user}@${domain}`;
+  return { user, domain, email };
+}
 
-    while (Date.now() - start < waitTime) {
-        try {
-            const inbox = await axios.get(`https://www.1secmail.com/api/v1/?action=getMessages&login=${login}&domain=${DOMAIN}`);
-            if (inbox.data.length > 0) {
-                const msgId = inbox.data[0].id;
-                const message = await axios.get(`https://www.1secmail.com/api/v1/?action=readMessage&login=${login}&domain=${DOMAIN}&id=${msgId}`);
-                const body = message.data.body || message.data.textBody;
-                const match = body.match(regex);
-                if (match) return match[1];
-            }
-        } catch (err) {
-            console.log(`⏳ [${login}] Waiting for verification email...`);
-        }
-        await new Promise(r => setTimeout(r, 5000));
-    }
+// Get list of messages for temp email
+async function getMessages(user, domain) {
+  const url = `https://www.1secmail.com/api/v1/?action=getMessages&login=${user}&domain=${domain}`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    return data;
+  } catch {
+    return [];
+  }
+}
+
+// Read single message content
+async function readMessage(user, domain, id) {
+  const url = `https://www.1secmail.com/api/v1/?action=readMessage&login=${user}&domain=${domain}&id=${id}`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    return data;
+  } catch {
     return null;
+  }
+}
+
+// Extract verification code from email body (6 digit code)
+async function getVerificationCode(user, domain, waitTime = 120000) {
+  const pattern = /Enter the code below on the login screen to continue:\s*(\d{6})/;
+  const start = Date.now();
+
+  while(Date.now() - start < waitTime) {
+    const messages = await getMessages(user, domain);
+    for(const msg of messages) {
+      const messageData = await readMessage(user, domain, msg.id);
+      if(messageData) {
+        const body = (messageData.body || '') + ' ' + (messageData.textBody || '');
+        // console.log('[DEBUG] Email body:', body);
+        const match = body.match(pattern);
+        if(match) {
+          return match[1];
+        }
+      }
+    }
+    // wait 5 seconds before retrying
+    await new Promise(r => setTimeout(r, 5000));
+  }
+  return null;
 }
 
 async function createAccount(inviteCode, index) {
-    const login = generateRandomString(10);
-    const email = `${login}@${DOMAIN}`;
+  const browser = await puppeteer.launch({ headless: true });
+  const page = await browser.newPage();
+
+  try {
+    const { user, domain, email } = createTempEmail();
     console.log(`[${index}] 📧 Using temp email: ${email}`);
 
-    const browser = await puppeteer.launch({ headless: true });
-    const page = await browser.newPage();
+    await page.goto(INVITE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
 
-    try {
-        await page.goto(INVITE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-        await page.waitForTimeout(3000); // Extra delay for full DOM load
+    // fill email input
+    const emailSelector = '#email_field, input[type="email"]';
+    await page.waitForSelector(emailSelector, { timeout: 15000 });
+    await page.focus(emailSelector);
+    await page.evaluate((selector) => {
+      document.querySelector(selector).value = '';
+    }, emailSelector);
+    await page.type(emailSelector, email, { delay: 100 });
 
-        // Try to find an email field dynamically
-        const inputFields = await page.$$('input');
-        let emailField = null;
-        for (let input of inputFields) {
-            const type = await input.getProperty('type').then(p => p.jsonValue()).catch(() => '');
-            const placeholder = await input.getProperty('placeholder').then(p => p.jsonValue()).catch(() => '');
+    // fill invite code
+    const inviteSelector = 'input[name="inviteCode"], input[type="text"]';
+    await page.waitForSelector(inviteSelector, { timeout: 15000 });
+    await page.focus(inviteSelector);
+    await page.evaluate((selector) => {
+      document.querySelector(selector).value = '';
+    }, inviteSelector);
+    await page.type(inviteSelector, inviteCode, { delay: 100 });
 
-            if (
-                (type && type.toLowerCase() === 'email') ||
-                (placeholder && placeholder.toLowerCase().includes('email'))
-            ) {
-                emailField = input;
-                break;
-            }
-        }
+    // Click the submit button
+    const buttonSelector = 'button';
+    await page.waitForSelector(buttonSelector, { timeout: 15000 });
+    await page.click(buttonSelector);
 
-        if (!emailField) throw new Error("❌ Email input field not found!");
+    console.log(`[${index}] 📨 Email & invite code submitted. Waiting for verification code...`);
 
-        await emailField.type(email, { delay: 50 });
+    // wait a few seconds for email to arrive
+    await new Promise(r => setTimeout(r, 5000));
 
-        // Fill invite code
-        const textInputs = await page.$$("input[type='text']");
-        if (textInputs.length > 0) {
-            await textInputs[0].type(inviteCode);
-        } else {
-            console.log(`[${index}] ⚠️ Invite code field not found!`);
-        }
+    const code = await getVerificationCode(user, domain);
 
-        const button = await page.$("button");
-        if (!button) throw new Error("❌ Submit button not found!");
-        await button.click();
-
-        console.log(`[${index}] 📨 Submitted, waiting for verification code...`);
-
-        const code = await getVerificationCode(login);
-        if (!code) {
-            console.log(`[${index}] ❌ No verification code received.`);
-            return;
-        }
-
-        console.log(`[${index}] ✅ Verification code received: ${code}`);
-        await page.waitForSelector("input[type='number']", { timeout: 10000 });
-        await page.type("input[type='number']", code);
-        await page.click("button");
-
-        console.log(`[${index}] 🎉 Account created!`);
-    } catch (err) {
-        console.error(`[${index}] ❌ Error: ${err.message}`);
-    } finally {
-        await browser.close();
+    if(!code) {
+      console.log(`[${index}] ❌ Verification code not received.`);
+      await browser.close();
+      return;
     }
+
+    console.log(`[${index}] ✅ Verification code received: ${code}`);
+
+    // fill verification code input
+    const codeSelector = 'input[type="number"], input[name="verificationCode"]';
+    await page.waitForSelector(codeSelector, { timeout: 15000 });
+    await page.focus(codeSelector);
+    await page.evaluate((selector) => {
+      document.querySelector(selector).value = '';
+    }, codeSelector);
+    await page.type(codeSelector, code, { delay: 100 });
+
+    // Submit verification code
+    await page.click(buttonSelector);
+
+    console.log(`[${index}] 🎉 Account #${index} created successfully!`);
+
+  } catch (error) {
+    console.log(`[${index}] ❌ Error: ${error.message || error}`);
+  } finally {
+    await browser.close();
+  }
 }
 
 (async () => {
-    const inviteCode = process.argv[2];
-    const total = parseInt(process.argv[3]) || 1;
+  const args = process.argv.slice(2);
+  if(args.length < 2) {
+    console.log('Usage: node script.js <INVITE_CODE> <NUMBER_OF_ACCOUNTS>');
+    process.exit(1);
+  }
+  const inviteCode = args[0];
+  const total = parseInt(args[1], 10);
 
-    if (!inviteCode) {
-        console.log("❗ Usage: node script.js <INVITE_CODE> <NUMBER_OF_ACCOUNTS>");
-        process.exit(1);
-    }
-
-    for (let i = 1; i <= total; i++) {
-        await createAccount(inviteCode, i);
-        await new Promise(r => setTimeout(r, 5000 + Math.random() * 3000)); // Delay between accounts
-    }
+  for(let i=1; i<=total; i++) {
+    await createAccount(inviteCode, i);
+    // random delay between 5-8 seconds
+    await new Promise(r => setTimeout(r, 5000 + Math.random() * 3000));
+  }
 })();
