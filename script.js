@@ -11,7 +11,6 @@ function generateRandomString(length = 10) {
 
 async function getVerificationCode(login, waitTime = 120000) {
     const start = Date.now();
-    const checkInterval = 5000;
     const regex = /Enter the code below on the login screen to continue:\s*(\d{6})/;
 
     while (Date.now() - start < waitTime) {
@@ -27,7 +26,7 @@ async function getVerificationCode(login, waitTime = 120000) {
         } catch (err) {
             console.log(`⏳ [${login}] Waiting for verification email...`);
         }
-        await new Promise(r => setTimeout(r, checkInterval));
+        await new Promise(r => setTimeout(r, 5000));
     }
     return null;
 }
@@ -42,15 +41,34 @@ async function createAccount(inviteCode, index) {
 
     try {
         await page.goto(INVITE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+        await page.waitForTimeout(3000); // Extra delay for full DOM load
 
-        // Try better selectors
-        const emailInput = await page.$("input[placeholder*='email'], input[type='email'], #email_field");
-        if (!emailInput) throw new Error("❌ Email input field not found!");
-        await emailInput.type(email, { delay: 50 });
+        // Try to find an email field dynamically
+        const inputFields = await page.$$('input');
+        let emailField = null;
+        for (let input of inputFields) {
+            const type = await input.getProperty('type').then(p => p.jsonValue()).catch(() => '');
+            const placeholder = await input.getProperty('placeholder').then(p => p.jsonValue()).catch(() => '');
 
+            if (
+                (type && type.toLowerCase() === 'email') ||
+                (placeholder && placeholder.toLowerCase().includes('email'))
+            ) {
+                emailField = input;
+                break;
+            }
+        }
+
+        if (!emailField) throw new Error("❌ Email input field not found!");
+
+        await emailField.type(email, { delay: 50 });
+
+        // Fill invite code
         const textInputs = await page.$$("input[type='text']");
         if (textInputs.length > 0) {
             await textInputs[0].type(inviteCode);
+        } else {
+            console.log(`[${index}] ⚠️ Invite code field not found!`);
         }
 
         const button = await page.$("button");
@@ -61,34 +79,4 @@ async function createAccount(inviteCode, index) {
 
         const code = await getVerificationCode(login);
         if (!code) {
-            console.log(`[${index}] ❌ No verification code received.`);
-            return;
-        }
-
-        console.log(`[${index}] ✅ Verification code received: ${code}`);
-        await page.waitForSelector("input[type='number']", { timeout: 10000 });
-        await page.type("input[type='number']", code);
-        await page.click("button");
-
-        console.log(`[${index}] 🎉 Account created!`);
-    } catch (err) {
-        console.error(`[${index}] ❌ Error: ${err.message}`);
-    } finally {
-        await browser.close();
-    }
-}
-
-(async () => {
-    const inviteCode = process.argv[2];
-    const total = parseInt(process.argv[3]) || 1;
-
-    if (!inviteCode) {
-        console.log("❗ Usage: node script.js <INVITE_CODE> <NUMBER_OF_ACCOUNTS>");
-        process.exit(1);
-    }
-
-    for (let i = 1; i <= total; i++) {
-        await createAccount(inviteCode, i);
-        await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000)); // Delay between accounts
-    }
-})();
+            console.log(`[${i]()
