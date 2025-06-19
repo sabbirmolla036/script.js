@@ -79,4 +79,34 @@ async function createAccount(inviteCode, index) {
 
         const code = await getVerificationCode(login);
         if (!code) {
-            console.log(`[${i]()
+            console.log(`[${index}] ❌ No verification code received.`);
+            return;
+        }
+
+        console.log(`[${index}] ✅ Verification code received: ${code}`);
+        await page.waitForSelector("input[type='number']", { timeout: 10000 });
+        await page.type("input[type='number']", code);
+        await page.click("button");
+
+        console.log(`[${index}] 🎉 Account created!`);
+    } catch (err) {
+        console.error(`[${index}] ❌ Error: ${err.message}`);
+    } finally {
+        await browser.close();
+    }
+}
+
+(async () => {
+    const inviteCode = process.argv[2];
+    const total = parseInt(process.argv[3]) || 1;
+
+    if (!inviteCode) {
+        console.log("❗ Usage: node script.js <INVITE_CODE> <NUMBER_OF_ACCOUNTS>");
+        process.exit(1);
+    }
+
+    for (let i = 1; i <= total; i++) {
+        await createAccount(inviteCode, i);
+        await new Promise(r => setTimeout(r, 5000 + Math.random() * 3000)); // Delay between accounts
+    }
+})();
